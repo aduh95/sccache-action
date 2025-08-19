@@ -21,6 +21,7 @@ import {
   find
 } from '@actions/tool-cache';
 import {getOctokit} from '@actions/github';
+import * as path from 'path';
 
 import * as fs from 'fs';
 
@@ -42,8 +43,10 @@ async function setup() {
 
   // Search local file system cache for sccache.
   // This is useful when actions run on a self-hosted runner.
-  let sccacheHome = find('sccache', version);
-  if (sccacheHome === '') {
+  let sccacheHome = version !== 'nixpkgs' && find('sccache', version);
+  if (version === 'nixpkgs') {
+    core.info('Skipping download');
+  } else if (sccacheHome === '') {
     const sccachePath = await downloadSCCache(version);
     if (sccachePath instanceof Error) {
       core.setFailed(sccachePath.message);
@@ -61,10 +64,13 @@ async function setup() {
   } else {
     core.info(`find sccache at: ${sccacheHome}`);
   }
-  // Add sccache into path.
-  core.addPath(`${sccacheHome}`);
-  // Expose the sccache path as env.
-  core.exportVariable('SCCACHE_PATH', `${sccacheHome}/sccache`);
+
+  if (version !== 'nixpkgs') {
+    // Add sccache into path.
+    core.addPath(`${sccacheHome}`);
+    // Expose the sccache path as env.
+    core.exportVariable('SCCACHE_PATH', `${sccacheHome}/sccache`);
+  }
 
   // Force the github action v2
   core.exportVariable('ACTIONS_CACHE_SERVICE_V2', `on`);
@@ -86,36 +92,41 @@ async function setup() {
 async function downloadSCCache(version: string): Promise<Error | string> {
   const filename = getFilename(version);
 
-  const downloadUrl = `https://github.com/mozilla/sccache/releases/download/${version}/${filename}`;
-  const sha256Url = `${downloadUrl}.sha256`;
-  core.info(`sccache download from url: ${downloadUrl}`);
-
-  // Download and extract.
-  const sccachePackage = await downloadTool(downloadUrl);
-  const sha256File = await downloadTool(sha256Url);
-
-  // Calculate the SHA256 checksum of the downloaded file.
-  const fileBuffer = await fs.promises.readFile(sccachePackage);
-  const hash = crypto.createHash('sha256');
-  hash.update(fileBuffer);
-  const calculatedChecksum = hash.digest('hex');
-
-  // Read the provided checksum from the .sha256 file.
-  const providedChecksum = (await fs.promises.readFile(sha256File))
-    .toString()
-    .trim();
-
-  // Compare the checksums.
-  if (calculatedChecksum !== providedChecksum) {
-    return Error('Checksum verification failed');
-  }
-  core.info(`Correct checksum: ${calculatedChecksum}`);
-
   let sccachePath;
-  if (getExtension() == 'zip') {
-    sccachePath = await extractZip(sccachePackage);
+  if (version === 'nixpkgs') {
+    sccachePath = path.join(process.env['RUNNER_TEMP']!, crypto.randomUUID());
+    await fs.promises.mkdir(sccachePath, {recursive: true});
   } else {
-    sccachePath = await extractTar(sccachePackage);
+    const downloadUrl = `https://github.com/mozilla/sccache/releases/download/${version}/${filename}`;
+    const sha256Url = `${downloadUrl}.sha256`;
+    core.info(`sccache download from url: ${downloadUrl}`);
+
+    // Download and extract.
+    const sccachePackage = await downloadTool(downloadUrl);
+    const sha256File = await downloadTool(sha256Url);
+
+    // Calculate the SHA256 checksum of the downloaded file.
+    const fileBuffer = await fs.promises.readFile(sccachePackage);
+    const hash = crypto.createHash('sha256');
+    hash.update(fileBuffer);
+    const calculatedChecksum = hash.digest('hex');
+
+    // Read the provided checksum from the .sha256 file.
+    const providedChecksum = (await fs.promises.readFile(sha256File))
+      .toString()
+      .trim();
+
+    // Compare the checksums.
+    if (calculatedChecksum !== providedChecksum) {
+      return Error('Checksum verification failed');
+    }
+    core.info(`Correct checksum: ${calculatedChecksum}`);
+
+    if (getExtension() == 'zip') {
+      sccachePath = await extractZip(sccachePackage);
+    } else {
+      sccachePath = await extractTar(sccachePackage);
+    }
   }
   core.info(`sccache extracted to: ${sccachePath}`);
   return sccachePath;
